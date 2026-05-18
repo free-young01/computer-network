@@ -66,25 +66,19 @@ int build_frame(uint8_t *frame,
     return static_cast<int>(2 + payload_size + 4);
 }
 
-size_t next_payload_after_ack(size_t current_payload, unsigned consecutive_acks) {
-    if (current_payload < 1024) {
+// ssthresh 매개변수 추가
+size_t next_payload_after_ack(size_t current_payload, size_t ssthresh, unsigned consecutive_acks) {
+    // 하드코딩된 1024를 제거하고 ssthresh 기반으로 상태 전이
+    if (current_payload < ssthresh) {
         return std::min(current_payload * 2, kAdaptiveMaxPayload);
     }
 
     if (consecutive_acks >= 4) {
-        size_t increase = std::max<size_t>(256, current_payload / 4);
+        size_t increase = std::max<size_t>(kMinPayloadSize, current_payload / 8);
         return std::min(current_payload + increase, kAdaptiveMaxPayload);
     }
 
     return current_payload;
-}
-
-size_t next_payload_after_nak(size_t current_payload) {
-    if (current_payload <= kMinPayloadSize) {
-        return kMinPayloadSize;
-    }
-
-    return std::max(current_payload / 4, kMinPayloadSize);
 }
 
 }  // namespace
@@ -113,6 +107,7 @@ int main(int argc, char **argv) {
     uint8_t frame[kMaxFrameSize];
     size_t offset = 0;
     size_t payload_size = kInitialPayloadSize;
+    size_t ssthresh = kAdaptiveMaxPayload; // 상태 변수 추가
     unsigned consecutive_acks = 0;
 
     while (offset < data.size()) {
@@ -126,13 +121,16 @@ int main(int argc, char **argv) {
         if (result == NETSIM_ACK) {
             offset += attempt_payload;
             ++consecutive_acks;
-            payload_size = next_payload_after_ack(payload_size, consecutive_acks);
+            // ssthresh를 넘겨주어 증가 정책 결정
+            payload_size = next_payload_after_ack(payload_size, ssthresh, consecutive_acks);
             if (consecutive_acks >= 4) {
                 consecutive_acks = 0;
             }
         } else if (result == NETSIM_NAK) {
             consecutive_acks = 0;
-            payload_size = next_payload_after_nak(attempt_payload);
+            // NAK 발생 시: ssthresh는 장기 메모리로 /2, payload는 단기 생존을 위해 /4
+            ssthresh = std::max(kMinPayloadSize, (attempt_payload * 3) / 4);
+            payload_size = std::max(kMinPayloadSize, attempt_payload / 4);
         } else {
             std::cerr << "send_frame failed\n";
             return 1;
